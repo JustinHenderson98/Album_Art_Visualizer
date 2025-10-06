@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import RecentGrid from "./components/recentGrid";
 // =====================
 // 🔧 CONFIG — EDIT ME
@@ -52,12 +52,6 @@ const store = {
   del(key) { localStorage.removeItem(key); },
 };
 
-function millisToClock(ms) {
-  const t = Math.floor(ms / 1000);
-  const m = Math.floor(t / 60);
-  const s = (t % 60).toString().padStart(2, "0");
-  return `${m}:${s}`;
-}
 
 // =====================
 // Spotify API wrappers
@@ -115,8 +109,6 @@ async function apiGet(path, access_token) {
 export default function App() {
   const [token, setToken] = useState(() => store.get("spotify_token"));
   const [profile, setProfile] = useState(null);
-  const [playing, setPlaying] = useState(null);
-  const [features, setFeatures] = useState(null);
   const [error, setError] = useState("");
 
   // --- Handle OAuth redirect ---
@@ -236,7 +228,6 @@ export default function App() {
       catch (e) { setError(e.message); }
     })();
   }, [token]);
-            const [artEnergy, setArtEnergy] = useState(0.65); // optional visual knob
 
 
   function login() {
@@ -263,12 +254,6 @@ export default function App() {
     setToken(null);
   }
 
-  const album = playing?.item?.album;
-  const artists = useMemo(() => playing?.item?.artists?.map(a => a.name).join(", ") || "", [playing]);
-  const isPlaying = playing?.is_playing;
-  const progress = playing ? playing.progress_ms : 0;
-  const duration = playing?.item?.duration_ms || 0;
-  const img = album?.images?.[0]?.url || "";
   const signedIn = !!(token?.access_token || token?.refresh_token);
   console.log(signedIn);
   console.log(token?.access_token);
@@ -284,7 +269,7 @@ return signedIn ? (
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-pink-500 to-purple-500" />
             <div>
-              <div className="text-lg font-semibold">TunnelTunes</div>
+              <div className="text-lg font-semibold">Album Art Visualizer</div>
               <div className="text-xs text-neutral-400">Spotify visualizer (PKCE, no backend)</div>
             </div>
           </div>
@@ -301,37 +286,6 @@ return signedIn ? (
         <main className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6 items-start bg-black">
           <aside className="order-1 lg:order-2">
             <div className="bg-neutral-900 rounded-2xl p-4 shadow-xl">
-              <div className="flex gap-4">
-                {img ? (
-                  <img src={img} alt="album" className="w-28 h-28 object-cover rounded-xl" />
-                ) : (
-                  <div className="w-28 h-28 rounded-xl bg-neutral-800" />
-                )}                
-                <div className="flex-1">
-                  <div className="font-semibold text-lg leading-tight line-clamp-2">{playing?.item?.name || "Nothing playing"}</div>
-                  <div className="text-sm text-neutral-400 line-clamp-1">{artists}</div>
-                  <div className="text-xs text-neutral-500 mt-1">{album?.name}</div>
-                </div>
-              </div>
-              <div className="mt-4">
-                <div className="h-2 bg-neutral-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-emerald-500" style={{ width: duration ? `${(progress / duration) * 100}%` : "0%" }} />
-                </div>
-                <div className="flex justify-between text-xs text-neutral-500 mt-1">
-                  <span>{millisToClock(progress)}</span>
-                  <span>{millisToClock(duration)}</span>
-                </div>
-              </div>
-
-              {features && (
-                <div className="grid grid-cols-2 gap-3 text-sm mt-4">
-                  <Stat label="Tempo" value={`${Math.round(features.tempo)} bpm`} />
-                  <Stat label="Energy" value={features.energy.toFixed(2)} />
-                  <Stat label="Danceability" value={features.danceability.toFixed(2)} />
-                  <Stat label="Valence" value={features.valence.toFixed(2)} />
-                </div>
-              )}
-
               {error && <div className="mt-3 text-rose-400 text-sm">{error}</div>}
               {!token && (
                 <div className="mt-3 text-xs text-neutral-400">
@@ -342,43 +296,6 @@ return signedIn ? (
           </aside>
         </main>
       </div>
-    </div>
-  );
-}
-
-
-function computeImageEnergy(url, cb) {
-  if (!url) return cb(0.65);
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => {
-    const c = document.createElement("canvas");
-    const s = 48; c.width = c.height = s;
-    const ctx = c.getContext("2d");
-    ctx.drawImage(img, 0, 0, s, s);
-    const { data } = ctx.getImageData(0, 0, s, s);
-    let sum = 0, sumSq = 0, n = data.length/4;
-    for (let i = 0; i < data.length; i += 4) {
-      const l = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]; // luminance
-      sum += l; sumSq += l*l;
-    }
-    const mean = sum / n;
-    const varc = Math.max(0, sumSq/n - mean*mean); // contrast proxy
-    // map brightness + contrast to [0..1]
-    const brightness = mean / 255;
-    const contrast = Math.min(1, Math.sqrt(varc)/128);
-    cb(Math.min(1, 0.4*brightness + 0.6*contrast));
-  };
-  img.onerror = () => cb(0.65);
-  img.src = url;
-}
-
-
-function Stat({ label, value }) {
-  return (
-    <div className="bg-neutral-800 rounded-xl p-3">
-      <div className="text-neutral-400 text-xs">{label}</div>
-      <div className="font-semibold">{value}</div>
     </div>
   );
 }
