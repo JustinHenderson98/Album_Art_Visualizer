@@ -150,64 +150,83 @@ export default function App() {
     doExchange();
   }, []);
 
-  // --- Refresh token when needed ---
-useEffect(() => {
-  (async () => {
+  let refreshing = false;
+  const isTokenFresh = (t, skewMs = 60_000) =>
+    !!(t?.access_token && t?.expires_at && Date.now() < t.expires_at - skewMs);
+
+
+  async function safeRefresh(t) {
+    if (refreshing) return null;
+    refreshing = true;
+    try {
+      const rt = await refreshToken(t.refresh_token);
+      const newTok = {
+        ...t,
+        access_token: rt.access_token,
+        expires_in: rt.expires_in,
+        expires_at: Date.now() + rt.expires_in * 1000,
+        refresh_token: rt.refresh_token ?? t.refresh_token, // Spotify rotates sometimes
+        received_at: Date.now(),
+      };
+      store.set("spotify_token", newTok);
+      setToken(newTok);
+      return newTok;
+    } catch (e) {
+      // Try to read the body for specific errors
+      try {
+        const clone = e.response ? await e.response.json() : null;
+        if (clone?.error === "invalid_grant") {
+          // Only now do a hard logout
+          store.del("spotify_token");
+          setToken(null);
+        }
+      } catch {}
+      // For any other error, keep tokens and surface an error; we can retry on next tick
+      setError(`Refresh error: ${e.message}`);
+      return null;
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  useEffect(() => {
+    if (!token?.refresh_token) return;
+
+    // immediate top-up if not fresh
+    if (!isTokenFresh(token, 60_000)) { safeRefresh(token); }
+
+    // schedule one refresh slightly before expiry
+    const delay = Math.max(0, (token.expires_at ?? 0) - Date.now() - 60_000);
+    const handle = setTimeout(() => safeRefresh(token), delay);
+
+    return () => clearTimeout(handle);
+  }, [token?.refresh_token, token?.expires_at]);
+
+
+  useEffect(() => {
     if (!token) return;
-    if (isTokenValid(token)) return;
-
-    if (token.refresh_token) {
-      try {
-        const rt = await refreshToken(token.refresh_token);
-        const newTok = {
-          ...token,
-          access_token: rt.access_token,
-          expires_in: rt.expires_in,
-          expires_at: Date.now() + rt.expires_in * 1000,
-          // Spotify may rotate the refresh token:
-          refresh_token: rt.refresh_token ?? token.refresh_token,
-        };
-        store.set("spotify_token", newTok);
-        setToken(newTok);
-      } catch (e) {
-        // hard-fail to signed-out
-        store.del("spotify_token");
-        setToken(null);
-        setError(e.message);
+    const id = setInterval(async () => {
+      if (Date.now() > (token.expires_at - 30_000) && token.refresh_token) {
+        try {
+          const rt = await refreshToken(token.refresh_token);
+          const newTok = {
+            ...token,
+            access_token: rt.access_token,
+            expires_in: rt.expires_in,
+            expires_at: Date.now() + rt.expires_in * 1000,
+            refresh_token: rt.refresh_token ?? token.refresh_token,
+          };
+          store.set("spotify_token", newTok);
+          setToken(newTok);
+        } catch (e) {
+          store.del("spotify_token");
+          setToken(null);
+          setError(e.message);
+        }
       }
-    } else {
-      // no refresh_token -> require re-login
-      store.del("spotify_token");
-      setToken(null);
-    }
-  })();
-}, [token]);
-
-
-useEffect(() => {
-  if (!token) return;
-  const id = setInterval(async () => {
-    if (Date.now() > (token.expires_at - 30_000) && token.refresh_token) {
-      try {
-        const rt = await refreshToken(token.refresh_token);
-        const newTok = {
-          ...token,
-          access_token: rt.access_token,
-          expires_in: rt.expires_in,
-          expires_at: Date.now() + rt.expires_in * 1000,
-          refresh_token: rt.refresh_token ?? token.refresh_token,
-        };
-        store.set("spotify_token", newTok);
-        setToken(newTok);
-      } catch (e) {
-        store.del("spotify_token");
-        setToken(null);
-        setError(e.message);
-      }
-    }
-  }, 10_000);
-  return () => clearInterval(id);
-}, [token]);
+    }, 10_000);
+    return () => clearInterval(id);
+  }, [token]);
 
   // --- Fetch profile once ---
   useEffect(() => {
@@ -243,15 +262,14 @@ useEffect(() => {
     store.del("spotify_token");
     setToken(null);
   }
-  const isTokenValid = (t) =>
-  !!(t?.access_token && t?.expires_at && Date.now() < t.expires_at - 5000);
+
   const album = playing?.item?.album;
   const artists = useMemo(() => playing?.item?.artists?.map(a => a.name).join(", ") || "", [playing]);
   const isPlaying = playing?.is_playing;
   const progress = playing ? playing.progress_ms : 0;
   const duration = playing?.item?.duration_ms || 0;
   const img = album?.images?.[0]?.url || "";
-  const signedIn = isTokenValid(token);
+  const signedIn = !!(token?.access_token || token?.refresh_token);
   console.log(signedIn);
   console.log(token?.access_token);
 
