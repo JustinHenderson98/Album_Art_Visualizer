@@ -1,61 +1,92 @@
 import React, { useEffect, useRef, useState } from "react";
 import AlbumTunnel from "./AlbumTunnel";
 
-export default function RecentGrid({ token, full = false, gap = 30, knobs }) {
-  const [tiles, setTiles] = useState([]);           // [{id, src}]
-  const prevRef = useRef([]);                       // last emitted tiles
+/**
+ * A small contract for bring-your-own data:
+ * - source can be:
+ *    1) Array<string | {id:string, src:string}>
+ *    2) Async function: () => Promise<{ tiles: Array<{id, src}>, retryMs?: number }>
+ */
 
-  // --- poll recently-played and keep the first 6 unique albums ---
+
+export default function RecentGrid({
+  source,                 // Array or Async fetcher function (preferred)
+  full = false,
+  gap = 30,
+  knobs,
+  maxTiles = 6,
+  pollMs = 10000,
+  onTiles,                // optional callback when tiles change
+}) {
+  const [tiles, setTiles] = useState([]);     // [{id, src}]
+  const prevRef = useRef([]);                 // last emitted tiles
+  const timerRef = useRef(null);
+
+  // normalize array sources into [{id, src}]
+  const normalizeArraySource = (arr) => {
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((v, i) =>
+        typeof v === "string" ? { id: v, src: v } : { id: v.id ?? String(i), src: v.src ?? "" }
+      )
+      .filter((t) => t.id && t.src);
+  };
+
+  const sameTiles = (a, b) =>
+    a.length === b.length && a.every((t, i) => t.id === b[i].id && t.src === b[i].src);
+
   useEffect(() => {
-    if (!token?.access_token) return;
     let stop = false;
-    let timer = null;
 
-    const sameTiles = (a, b) =>
-      a.length === b.length && a.every((t, i) => t.id === b[i].id && t.src === b[i].src);
-
-    const fetchOnce = async () => {
-      const res = await fetch(
-        "https://api.spotify.com/v1/me/player/recently-played?limit=50",
-        { headers: { Authorization: `Bearer ${token.access_token}` } }
-      );
-
-      if (res.status === 429) {
-        const retry = Number(res.headers.get("Retry-After") || 15) * 1000;
-        return retry; // back off
-      }
-      if (!res.ok) throw new Error(`recently-played ${res.status}`);
-
-      const data = await res.json();
-      const items = Array.isArray(data.items) ? data.items : [];
-
-      // newest -> oldest, dedupe by album id
-      const seen = new Set();
-      const fresh = [];
-      for (const it of items) {
-        const a = it?.track?.album;
-        if (!a) continue;
-        const id = a.id || a.name;
-        const src = a.images?.[0]?.url || "";
-        if (!id || !src || seen.has(id)) continue;
-        seen.add(id);
-        fresh.push({ id, src });
-        if (fresh.length >= 6) break;
-      }
-
-      // fill with previous tiles if fewer than 6 new
-      let next = fresh.slice(0, 6);
-      if (next.length < 6 && prevRef.current.length) {
+    const applyNext = (fresh) => {
+      // fill up to maxTiles using previous tiles (stable visual)
+      const seen = new Set(fresh.map((t) => t.id));
+      let next = fresh.slice(0, maxTiles);
+      if (next.length < maxTiles && prevRef.current.length) {
         for (const t of prevRef.current) {
-          if (next.length >= 6) break;
-          if (!seen.has(t.id)) { next.push(t); seen.add(t.id); }
+          if (next.length >= maxTiles) break;
+          if (!seen.has(t.id)) {
+            next.push(t);
+            seen.add(t.id);
+          }
         }
       }
-
       if (!sameTiles(prevRef.current, next)) {
         prevRef.current = next;
         setTiles(next);
+        onTiles?.(next);
       }
+    };
+
+    const clearTimer = () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+
+    const schedule = (ms) => {
+      if (stop) return;
+      clearTimer();
+      timerRef.current = setTimeout(loop, Math.max(0, ms ?? pollMs));
+    };
+
+    const fetchOnce = async () => {
+      // CASE 1: array source -> one-shot, no polling unless arrays change
+      if (Array.isArray(source)) {
+        applyNext(normalizeArraySource(source).slice(0, maxTiles));
+        return null; // no retry
+      }
+
+      // CASE 2: function source -> call it and respect its backoff
+      if (typeof source === "function") {
+        const { tiles: fresh = [], retryMs = null } = (await source()) || {};
+        applyNext(Array.isArray(fresh) ? fresh : []);
+        return retryMs; // allow custom backoff from the fetcher
+      }
+      
+      // nothing to do
+      applyNext([]);
       return null;
     };
 
@@ -63,20 +94,33 @@ export default function RecentGrid({ token, full = false, gap = 30, knobs }) {
       try {
         const wait = await fetchOnce();
         if (stop) return;
-        timer = setTimeout(loop, wait ?? 10000); // 25s default
+
+        // If source is array, don't poll repeatedly
+        if (Array.isArray(source)) return;
+
+        schedule(wait ?? pollMs);
       } catch {
-        if (!stop) timer = setTimeout(loop, 30000);
+        if (stop) return;
+        schedule(30000);
       }
     };
 
     loop();
-    return () => { stop = true; if (timer) clearTimeout(timer); };
-  }, [token]);
+    return () => {
+      stop = true;
+      clearTimer();
+    };
+    // Re-run if these change
+  }, [source, pollMs, maxTiles, onTiles]);
 
   // ---------- render ----------
-  const slots = tiles.slice(0, 6);
-  while (slots.length < 6) slots.push({ id: `placeholder-${slots.length}`, src: null });
-  const [t0, t1, t2, t3, t4, t5] = slots;
+  const slots = tiles.slice(0, maxTiles);
+  while (slots.length < maxTiles) {
+    slots.push({ id: `placeholder-${slots.length}`, src: null });
+  }
+
+  // Preserve your existing 2x3 layout
+  const [t0, t1, t2, t3, t4, t5] = slots.concat(Array(6).fill({ id: "ph", src: null })).slice(0, 6);
 
   const Tile = ({ tile, biasX = 0, biasY = 0 }) => (
     <div className="h-full w-full rounded-md overflow-hidden bg-black">
@@ -97,35 +141,40 @@ export default function RecentGrid({ token, full = false, gap = 30, knobs }) {
     </div>
   );
 
-  // full-screen container + exact gap control
   const cssVars = { "--g": `${gap | 0}px` };
 
   return (
-    <div className={full ? "h-full w-full" : "rounded-2xl"} style={{ ...cssVars, padding: full ? 0 : "var(--g)", backgroundColor: "#000", height: full ? "100%" : undefined }}>
+    <div
+      className={full ? "h-full w-full" : "rounded-2xl"}
+      style={{ ...cssVars, padding: full ? 0 : "var(--g)", backgroundColor: "#000", height: full ? "100%" : undefined }}
+    >
       <div className="h-full w-full">
-        <div className="grid h-full w-full min-h-0 min-w-0"         style={{
-          gridTemplateColumns: "1fr 1fr",
-          gridTemplateRows: "1fr",   // <-- stretch to full height
-          gap: "var(--g)",
-          backgroundColor: "#000",
-          padding: "var(--g)",          // ← perimeter border = same as gap
-          height: full ? "100%" : undefined,
-          boxSizing: "border-box",      // ← padding doesn’t push past viewport
-        }}>
+        <div
+          className="grid h-full w-full min-h-0 min-w-0"
+          style={{
+            gridTemplateColumns: "1fr 1fr",
+            gridTemplateRows: "1fr",
+            gap: "var(--g)",
+            backgroundColor: "#000",
+            padding: "var(--g)",
+            height: full ? "100%" : undefined,
+            boxSizing: "border-box",
+          }}
+        >
           {/* Left column */}
           <div className="grid h-full min-h-0" style={{ gridTemplateRows: "1fr 1fr", gap: "var(--g)", backgroundColor: "#000" }}>
             <div className="grid h-full min-h-0" style={{ gridTemplateColumns: "1fr 1fr", gap: "var(--g)", backgroundColor: "#000" }}>
-              <Tile key={t0.id} tile={t0} biasX={0} biasY={0} />
-              <Tile key={t1.id} tile={t1} biasX={0} biasY={0} />
+              <Tile key={t0?.id} tile={t0} biasX={0} biasY={0} />
+              <Tile key={t1?.id} tile={t1} biasX={0} biasY={0} />
             </div>
-            <Tile key={t2.id} tile={t2} biasX={0} biasY={0} />
+            <Tile key={t2?.id} tile={t2} biasX={0} biasY={0} />
           </div>
           {/* Right column */}
           <div className="grid h-full min-h-0" style={{ gridTemplateRows: "1fr 1fr", gap: "var(--g)", backgroundColor: "#000" }}>
-            <Tile key={t3.id} tile={t3} biasX={0} biasY={0} />
+            <Tile key={t3?.id} tile={t3} biasX={0} biasY={0} />
             <div className="grid h-full min-h-0" style={{ gridTemplateColumns: "1fr 1fr", gap: "var(--g)", backgroundColor: "#000" }}>
-              <Tile key={t4.id} tile={t4} biasX={0} biasY={0} />
-              <Tile key={t5.id} tile={t5} biasX={0} biasY={0} />
+              <Tile key={t4?.id} tile={t4} biasX={0} biasY={0} />
+              <Tile key={t5?.id} tile={t5} biasX={0} biasY={0} />
             </div>
           </div>
         </div>

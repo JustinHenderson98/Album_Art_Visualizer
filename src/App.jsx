@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import RecentGrid from "./components/recentGrid";
 // =====================
 // 🔧 CONFIG — EDIT ME
@@ -100,6 +100,43 @@ async function apiGet(path, access_token) {
   }
   if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
   return await res.json();
+}
+
+
+function SpotifyFetcher(token, { limit = 50, take = 6 } = {}) {
+  return async () => {
+    if (!token?.access_token) return { tiles: [] };
+
+    const res = await fetch(
+      `https://api.spotify.com/v1/me/player/recently-played?limit=${limit}`,
+      { headers: { Authorization: `Bearer ${token.access_token}` } }
+    );
+
+    if (res.status === 429) {
+      const retrySec = Number(res.headers.get("Retry-After") || 15);
+      return { tiles: [], retryMs: retrySec * 1000 };
+    }
+    if (!res.ok) throw new Error(`recently-played ${res.status}`);
+
+    const data = await res.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+
+    // newest -> oldest, dedupe by album id
+    const seen = new Set();
+    const fresh = [];
+    for (const it of items) {
+      const a = it?.track?.album;
+      if (!a) continue;
+      const id = a.id || a.name;
+      const src = a.images?.[0]?.url || "";
+      if (!id || !src || seen.has(id)) continue;
+      seen.add(id);
+      fresh.push({ id, src });
+      if (fresh.length >= take) break;
+    }
+
+    return { tiles: fresh };
+  };
 }
 
 
@@ -257,11 +294,13 @@ export default function App() {
   const signedIn = !!(token?.access_token || token?.refresh_token);
   console.log(signedIn);
   console.log(token?.access_token);
-
-
+const source = useMemo(
+  () => SpotifyFetcher(token),
+  [token?.access_token, token?.expires_at]
+);
 return signedIn ? (
 <div className="h-svh w-full bg-black overflow-hidden">
-  <RecentGrid token={token} full gap={30} />
+  <RecentGrid source={source} pollMs={30000} full gap={30} />
 </div>
 ) : ( <div className="min-h-screen bg-neutral-950 text-neutral-100" >
       <div className="max-w-6xl mx-auto px-4 py-6">
