@@ -1,6 +1,6 @@
 import { Routes, Route, Link } from "react-router-dom";
-import SpotifyPage from "./SpotifyPage";
-
+import SpotifyPage from "./Pages/SpotifyPage";
+import PlexPage from "./Pages/PlexPage.jsx";
 
 
 export default function App() {
@@ -22,12 +22,19 @@ export default function App() {
                 >
                   Open Spotify Visualizer
                 </Link>
+                <br></br>
+                <Link to="/plex"
+                 className="inline-block px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500"
+                >
+                  Open Plex Visualizer
+                </Link>
               </div>
             </div>
           </div>
         }
       />
       <Route path="/spotify" element={<SpotifyPage />} />
+      <Route path="/plex" element={<PlexPage />} />
       <Route
         path="*"
         element={

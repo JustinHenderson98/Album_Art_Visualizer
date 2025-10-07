@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import RecentGrid from "./components/recentGrid";
+import RecentGrid from "../components/recentGrid";
 
 // =====================
 // 🔧 CONFIG
@@ -105,7 +105,7 @@ async function apiGet(path, access_token) {
 }
 
 // =====================
-// BYO data fetcher for RecentGrid
+// Data fetcher for RecentGrid
 // =====================
 function SpotifyFetcher(token, { limit = 50, take = 6 } = {}) {
   return async () => {
